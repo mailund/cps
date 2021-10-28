@@ -5,23 +5,24 @@
 //  Created by Thomas Mailund on 26/10/2021.
 //
 
-#include "closure.h"
+#include "cps.h"
 #include <assert.h>
-
-
 
 cps_define_closure_type(fib, int, cps_args(int));
 
 cps_define_closure_frame(ret, int, cps_args(int));
-int cps_closure_function(ret, fib, int n) {
+int cps_closure_function(ret, fib, int n)
+{
     cps_decref_frame(pool_, frame_);
     return n;
 }
 
 cps_define_closure_frame(fib1, int, cps_args(int),
-                         int n; struct cps_closure k);
+                         int n;
+                         struct cps_closure k);
 cps_define_closure_frame(fib2, int, cps_args(int),
-                         int f1; struct cps_closure k);
+                         int f1;
+                         struct cps_closure k);
 
 int fib_cps(struct cps_stack *pool_, int n, struct cps_closure k)
 {
@@ -55,11 +56,10 @@ int fib(int n)
     cps_init_stack(&stack);
 
     int res = fib_cps(&stack, n, cps_push_closure_to_pool(ret, &stack, ));
-    
+
     assert(stack.sp == 0); // Validation that all is freed.
 
     cps_free_stack(&stack);
 
     return res;
 }
-

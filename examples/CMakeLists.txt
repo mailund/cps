@@ -1,0 +1,5 @@
+file(GLOB fib_sources fib/*.c)
+add_executable(fib ${fib_sources})
+target_link_libraries(fib cps)
+add_test(fib fib)
+set_target_properties(fib PROPERTIES FOLDER Examples)
