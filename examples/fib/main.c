@@ -21,7 +21,7 @@ cps_define_closure_frame(fib2, int, cps_args(int),
                          int f1;
                          struct cps_closure k);
 
-int fib_cps(struct cps_stack *pool_, int n, struct cps_closure k)
+int fib_cps(struct cps_closure_pool *pool_, int n, struct cps_closure k)
 {
     if (n <= 1)
     {
@@ -49,14 +49,16 @@ int cps_closure_function(fib2, fib, int f2)
 
 int fib(int n)
 {
-    struct cps_stack stack;
-    cps_init_stack(&stack);
+    // FIXME: better pool setup
+    struct cps_closure_pool pool;
+    cps_init_stack(&pool.stack);
 
-    int res = fib_cps(&stack, n, cps_push_closure_to_pool(ret, &stack, ));
+    struct cps_closure k = cps_push_closure_to_pool(ret, &pool, );
+    int res = fib_cps(&pool, n, k);
 
-    assert(stack.sp == 0); // Validation that all is freed.
+    assert(pool.stack.sp == 0); // Validation that all is freed.
 
-    cps_free_stack(&stack);
+    cps_free_stack(&pool.stack);
 
     return res;
 }

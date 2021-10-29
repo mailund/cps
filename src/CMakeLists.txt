@@ -39,8 +39,8 @@ install(TARGETS   ${PROJECT_NAME}
     COMPONENT     library
 )
 
-# FIXME: make this portable (but right now, the variable I used to switch on
-# doesn't seem to be set, so that didn't work).
+# FIXME: make this portable. Right now it will only work
+# for gcc and clang.
 target_compile_options(${PROJECT_NAME}
     PRIVATE
         -Wcast-align

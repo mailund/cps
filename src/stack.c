@@ -1,13 +1,4 @@
-//
-//  stack.c
-//  cps-iter
-//
-//  Created by Thomas Mailund on 25/10/2021.
-//
-
 #include "cps.h"
-#include <stdalign.h>
-#include <stdio.h>
 
 #define INIT_STACK_SIZE 565 /* completely arbitrary */
 
