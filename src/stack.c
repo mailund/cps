@@ -1,12 +1,12 @@
 #include "cps.h"
 
-#define INIT_STACK_SIZE 565 /* completely arbitrary */
+#define INIT_STACK_SIZE 512 /* completely arbitrary */
 
 void cps_init_stack(struct cps_stack *stack)
 {
     stack->sp = 0;
-    stack->data = 0;
-    cps_resize_stack(stack, INIT_STACK_SIZE);
+    stack->data = malloc(INIT_STACK_SIZE);
+    stack->size = INIT_STACK_SIZE;
 }
 
 void cps_resize_stack(struct cps_stack *stack, size_t new_size)

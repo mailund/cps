@@ -56,5 +56,5 @@ target_compile_options(${PROJECT_NAME}
         -Wweak-vtables
         -Werror
         -Wall
-        -O3
+        #-O3
 )

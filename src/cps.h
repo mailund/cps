@@ -3,6 +3,8 @@
 
 #include <assert.h> // FIXME: remove when I have persistent storage
 #include <stdalign.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 // MARK: STACK -------------------
@@ -51,9 +53,6 @@ static inline size_t cps_stack_alloc_frame_aligned(struct cps_stack *stack,
     return new_frame;
 }
 
-#define cps_stack_alloc_frame(STACK, TYPE) \
-    cps_stack_alloc_frame_aligned(STACK, sizeof(TYPE), alignof(TYPE))
-
 static inline void cps_stack_free_frame(struct cps_stack *stack,
                                         size_t fp)
 {
@@ -77,44 +76,119 @@ enum cps_closure_pool_types
     CPS_PERSISTENT = 1,
 };
 
-struct cps_closure_pool
+struct cps_memory_pool
 {
-    struct cps_stack stack;
-    // FIXME: persistent storage.
+    // This is not standard compliant, but is very likely to work.
+    // We are relying on pointers having alignment > 1, so the first bit is always zero
+    // for a true pointer, which means we can use it for a tag.
+    uintptr_t pool;
 };
 
-// MARK: CLOSURES -------------------
-struct cps_closure
+static inline enum cps_closure_pool_types cps_pool_type(struct cps_memory_pool pool)
 {
+    return pool.pool & 1;
+}
+
+static inline void *cps_pool_address(struct cps_memory_pool pool)
+{
+    return (void *)(pool.pool & ~(uintptr_t)1);
+}
+
+static inline struct cps_memory_pool cps_new_memory_pool(enum cps_closure_pool_types type, void *pool)
+{
+    return (struct cps_memory_pool){.pool = (uintptr_t)pool | type};
+}
+
+static inline void **cps_base_from_stack(struct cps_stack *stack)
+{
+    return &stack->data;
+}
+
+static inline struct cps_stack *cps_stack_from_base(void **base)
+{
+#pragma GCC diagnostic ignored "-Wcast-align"
+    return (struct cps_stack *)((char *)base - offsetof(struct cps_stack, data));
+}
+
+struct cps_memory
+{
+    // We cannot hold a direct pointer to a frame, if the memory pool needs
+    // to realloc memory. Instead, we hold a pointer to the memory, so we
+    // can get at the current block of storage.
+    void **base;
     // First bit in pool_id holds the pool type. The rest is an id
     // used to access memory from the pool (to avoid issues with
     // reallocated memory).
     size_t pool_id;
 };
 
-static inline enum cps_closure_pool_types cps_pool_type(struct cps_closure cl)
+static inline struct cps_memory cps_memory(struct cps_memory_pool pool, size_t pool_id)
 {
-    return cl.pool_id & 1;
-}
-
-static inline size_t cps_closure_id(struct cps_closure cl)
-{
-    return cl.pool_id >> 1;
-}
-
-static inline struct cps_closure cps_closure(enum cps_closure_pool_types type,
-                                             size_t pool_id)
-{
-    return (struct cps_closure){.pool_id = (pool_id << 1) | type};
-}
-
-static inline void cps_decref_closure(struct cps_closure_pool *pool,
-                                      struct cps_closure cl)
-{
-    switch (cps_pool_type(cl))
+    switch (cps_pool_type(pool))
     {
     case CPS_STACK:
-        cps_stack_free_frame(&pool->stack, cps_closure_id(cl));
+        return (struct cps_memory){
+            .base = cps_base_from_stack(cps_pool_address(pool)),
+            .pool_id = (pool_id << 1) | cps_pool_type(pool)};
+    case CPS_PERSISTENT:
+        assert(0); // FIXME
+    }
+}
+
+static inline struct cps_memory cps_allocate_memory(struct cps_memory_pool pool, size_t size, size_t align)
+{
+    switch (cps_pool_type(pool))
+    {
+    case CPS_STACK:
+        return cps_memory(pool, cps_stack_alloc_frame_aligned(cps_pool_address(pool), size, align));
+    case CPS_PERSISTENT:
+        assert(0); // FIXME
+    }
+}
+
+static inline enum cps_closure_pool_types cps_memory_pool_type(struct cps_memory mem)
+{
+    return mem.pool_id & 1;
+}
+
+static inline size_t cps_memory_id(struct cps_memory mem)
+{
+    return mem.pool_id >> 1;
+}
+
+static inline void *cps_memory_address(struct cps_memory mem)
+{
+    return (char *)(*mem.base) + cps_memory_id(mem);
+}
+
+static inline struct cps_memory_pool cps_memory_pool_from_memory(struct cps_memory mem)
+{
+    switch(cps_memory_pool_type(mem)) {
+        case CPS_STACK:
+            return cps_new_memory_pool(cps_memory_pool_type(mem), cps_stack_from_base(mem.base));
+        case CPS_PERSISTENT:
+            assert(0);
+    }
+}
+
+#define cps_stack_alloc_frame(STACK, TYPE) \
+    cps_stack_alloc_frame_aligned(STACK, sizeof(TYPE), alignof(TYPE))
+
+// MARK: CLOSURES -------------------
+typedef struct cps_memory cps_closure;
+
+struct cps_closure_frame;
+static inline struct cps_closure_frame *cps_get_closure_frame(cps_closure cl)
+{
+    return cps_memory_address(cl);
+}
+
+static inline void cps_decref_closure(cps_closure cl)
+{
+    switch (cps_memory_pool_type(cl))
+    {
+    case CPS_STACK:
+        cps_stack_free_frame(cps_stack_from_base(cl.base), cps_memory_id(cl));
         break;
     case CPS_PERSISTENT:
         assert(0); // FIXME
@@ -126,60 +200,50 @@ typedef void (*cps_closure_func)(void);
 struct cps_closure_frame
 {
     cps_closure_func fn;
-    struct cps_closure cl;
+    cps_closure cl;
 };
 
-#define cps_decref_frame(POOL, FRAME) \
-    cps_decref_closure(POOL, ((struct cps_closure_frame *)(FRAME))->cl)
-
-#define cps_enter_closure(TYPE)                               \
-    struct TYPE##_frame _ = *((struct TYPE##_frame *)frame_); \
-    cps_decref_frame(pool_, frame_);
+#define cps_enter_closure(TYPE)                                                   \
+    struct TYPE##_frame _ = *((struct TYPE##_frame *)cps_get_closure_frame(cl_)); \
+    cps_decref_closure(cl_);
 
 #define cps_args(...) __VA_ARGS__
 #define cps_define_closure_type(NAME, RET, ARGS) \
-    typedef RET (*NAME##_func_)(struct cps_closure_pool *, void *, ARGS);
+    typedef RET (*NAME##_func_)(cps_closure, ARGS);
 
-#define cps_define_closure_frame(NAME, RET, ARGS, ...)                                        \
-    struct NAME##_frame                                                                       \
-    {                                                                                         \
-        struct cps_closure_frame cf_;                                                         \
-        __VA_ARGS__;                                                                          \
-    };                                                                                        \
-    /* forward decl. */                                                                       \
-    RET NAME(struct cps_closure_pool *, void *, ARGS);                                        \
-    static inline struct cps_closure                                                          \
-        push_new_##NAME##_closure(struct cps_closure_pool *pool,                              \
-                                  RET (*fn)(struct cps_closure_pool *, void *, ARGS),         \
-                                  struct NAME##_frame data)                                   \
-    {                                                                                         \
-        struct cps_closure cl =                                                               \
-            cps_closure(CPS_STACK, cps_stack_alloc_frame(&pool->stack, struct NAME##_frame)); \
-        /* FIXME: dispatch on type */                                                         \
-        struct NAME##_frame *frame = cps_get_stack_frame(&pool->stack, cps_closure_id(cl));   \
-        *frame = data;                                                                        \
-        ((struct cps_closure_frame *)frame)->fn = (cps_closure_func)fn;                       \
-        ((struct cps_closure_frame *)frame)->cl = cl;                                         \
-        return cl;                                                                            \
+#define cps_define_closure_frame(NAME, RET, ARGS, ...)                                            \
+    struct NAME##_frame                                                                           \
+    {                                                                                             \
+        struct cps_closure_frame cf_;                                                             \
+        __VA_ARGS__;                                                                              \
+    };                                                                                            \
+    /* forward decl. */                                                                           \
+    RET NAME(cps_closure cl_, ARGS);                                                              \
+    static inline cps_closure                                                                     \
+        push_new_##NAME##_closure(struct cps_memory_pool pool,                                    \
+                                  RET (*fn)(cps_closure, ARGS),                                   \
+                                  struct NAME##_frame data)                                       \
+    {                                                                                             \
+        cps_closure cl =                                                                          \
+            cps_allocate_memory(pool, sizeof(struct NAME##_frame), alignof(struct NAME##_frame)); \
+        struct NAME##_frame *frame = (struct NAME##_frame *)cps_get_closure_frame(cl);            \
+        *frame = data;                                                                            \
+        ((struct cps_closure_frame *)frame)->fn = (cps_closure_func)fn;                           \
+        ((struct cps_closure_frame *)frame)->cl = cl;                                             \
+        return cl;                                                                                \
     }
 
-#define cps_closure_function(FNAME, CLTYPE, ...) \
-    FNAME(struct cps_closure_pool *pool_, void *frame_, __VA_ARGS__)
+#define cps_closure_function(FNAME, ...) \
+    FNAME(cps_closure cl_, __VA_ARGS__)
 
 // FIXME: handle if closure is in persistant storage
 // FIXME: dispatch on id
-#define cps_closure_frame(POOL, CL) \
-    ((struct cps_closure_frame *)cps_get_stack_frame(&((POOL)->stack), cps_closure_id(CL)))
-#define cps_closure_func(POOL, CL) \
-    (cps_closure_frame(POOL, CL)->fn)
-#define cps_call_closure_with_pool(TYPE, POOL, CL, ...) \
-    ((TYPE##_func_)cps_closure_func(POOL, CL))(POOL, cps_closure_frame(POOL, CL), __VA_ARGS__);
 #define cps_call_closure(TYPE, CL, ...) \
-    cps_call_closure_with_pool(TYPE, pool_, CL, __VA_ARGS__)
+    ((TYPE##_func_)(cps_get_closure_frame(CL)->fn))(CL, __VA_ARGS__)
 
 #define cps_push_closure_to_pool(F, POOL, ...) \
     push_new_##F##_closure(POOL, F, (struct F##_frame){__VA_ARGS__})
 #define cps_push_closure(F, ...) \
-    push_new_##F##_closure(pool_, F, (struct F##_frame){__VA_ARGS__})
+    cps_push_closure_to_pool(F, cps_memory_pool_from_memory(cl_), __VA_ARGS__)
 
 #endif /* closure_h */
